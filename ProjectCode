@@ -32,6 +32,11 @@ unsigned long currentTime =  0;
 float oldVelocity = 0.0;
 float tau = 1/300;
 
+// Ringing Variables -------------------------------------
+float omega = 5; // rad/s
+float kr = 1; 
+float kosc = 1;
+
 void setup() {
   pinMode(sensorInput, INPUT);
   pinMode(motorPWMPin, OUTPUT);
@@ -115,24 +120,62 @@ void loop()
   // Proportional rel'n between incoming velocity and ringing amplitude
   //-----------------------------------------------------------------------------
   if(counts == 1){
-    digitalWrite(13, HIGH);
-        delay(500);
-        digitalWrite(13, LOW);
-        delay(500);
+       // Read the current state of sensors
+       angleVal = (512.0 - analogRead(sensorInput))/ticksPerDeg;
+
+       // If the paddle is in the wall, execute the ringing:       
+       if(angleVal < 0) {
+        // Determine time that has passed since the last update;
+        currentTime = millis(); // In milliseconds
+        samplingTime = (currentTime - prevTime)/(1*1000.0); // In seconds
+        
+        // Filtering ////////////////////////////////////////////////////////////
+    
+        // Filter position and reassign
+        angleVal = (angleVal + (tau/samplingTime)*prevAngleVal)/((tau/samplingTime)+1);
+     
+        // Compute unfiltered angular velocity
+        velocity = (angleVal - prevAngleVal)/samplingTime;
+       
+        // Filter velocity and reassign
+        velocity = (velocity + (tau/samplingTime)*oldVelocity)/((tau/samplingTime)+1);
+
+        /////////////////////////////////////////////////////////////////////////
+       
+        // Define recoil force
+        Fr = velocity*kr*(d-currentTime);
+
+        // Define oscillation force
+        Fosc = velocity*kosc*(d-currentTime)*sin(omega*currentTime);
+       }
+       
+       else{
+        analogWrite(motorPWMPin,0);
+       }
   }
   
   //-----------------------------------------------------------------------------
   // Inverse rel'n between incoming velocity and ringing amplitude
   //-----------------------------------------------------------------------------
   else if(counts == 2){
-    //do nothing
+       // Read the current state of sensors
+       angleVal = (512.0 - analogRead(sensorInput))/ticksPerDeg;
+
+       // If the paddle is in the wall, execute the ringing
+       if(angleVal < 0) {
+        // execute the ringing
+       }
+       
+       else{
+        analogWrite(motorPWMPin,0);
+       }
   }
   
   //-----------------------------------------------------------------------------
   // Virtual Wall
   //-----------------------------------------------------------------------------
   else if(counts == 3){
-         // Read the current state of sensors
+       // Read the current state of sensors
        angleVal = (512.0 - analogRead(sensorInput))/ticksPerDeg;
     
        // Determine time that has passed since the last update;
