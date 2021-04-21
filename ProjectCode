@@ -312,17 +312,13 @@ void loop()
   }
 }
 //-------------------------------------------------------------------------------
-//  Read Buttons - Subroutine to read the ADC and return the button value
+//  Function to read onboard buttons
 //-------------------------------------------------------------------------------
 int Read_Buttons()
 {
   int adc_key_in = analogRead(A7);      // read the value of the key resistor divider
-  // The buttons are connected to a voltage divider that feeds into analog input A0.
-  // By looking at the voltage level, we can tell which button has been pressed if any.
-  // With no button pressed, the voltage will be pulled up to Vcc.
-    //Serial.println (adc_key_in);
-  if (adc_key_in >= 1000) return er0; // Most likely result, so it is the first option.
-  if (adc_key_in < 30)   return prop; // Work our way up the voltage ladder and return 1st valid result
+    if (adc_key_in >= 1000) return er0; 
+  if (adc_key_in < 30)   return prop; 
   if (adc_key_in < 200)  return inv;
   if (adc_key_in < 500)  return vw;
   if (adc_key_in < 700)  return er1;
