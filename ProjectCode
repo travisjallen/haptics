@@ -5,6 +5,35 @@
 #define motorPWMPin 5
 #define ticksPerDeg 14.26
 
+/* ------------------------------------------------
+ *  Exaggerated Vibration and Recoil from Impact
+ *  
+ *  From Gleeson and Johnson's 2010 paper on cartoon haptics
+ *  
+ *  Press S1 for a vibration and recoil force amplitude that
+ *  is proportional to the incoming velocity. This means
+ *  a fast incoming velocity will give a large force amplitude
+ *  for oscillation and recoil
+ *  
+ *  Press S2 for a vibration and recoil force amplitude that
+ *  is inversely proportional to the incoming velocity. This 
+ *  means a slow incoming velocity will give a large force 
+ *  amplitude for oscillation and recoil
+ *  
+ *  Press S3 for an ordinary virtual wall with no exaggerated
+ *  recoil or vibration
+ *  
+ *  If you intend to feel the effect of a slow velocity when 
+ *  approaching the virtual wall in the proportional or
+ *  inversely proportional cases (S1 and S2), you must move
+ *  VERY slowly up to the wall at -15 degrees, otherwise the 
+ *  effect is not as noticeable due to the small dynamic range 
+ *  of the motor on our haptic paddles. 
+ *    
+ *  Travis Allen, ME EN 7240 S'21
+ */
+
+
 // Button Variables -------------------------------
 const int er0 = 0;
 const int prop = 1;
@@ -30,28 +59,30 @@ float samplingTime = 0.0;
 unsigned long prevTime =  0;
 unsigned long currentTime =  0;
 float oldVelocity = 0.0;
-float tau = 1/300;
+float tau = 1/400;
 
 // Ringing Variables -------------------------------------
-float omega = 10; // rad/s
-float kr = .1; 
+float omega = 15; // rad/s
+float kr = .00005; 
+float tr = 0;
 float Fr = 0;
-float kosc = 1;
+float kosc = .00005;
 float Fosc = 0;
 float Ftot = 0;
 float d = 100000; // duration, in milliseconds
 float t = 0;
 float initTime = 0;
 float adjust = 64;
+float incv = 0;
 
 
 void setup() {
   pinMode(sensorInput, INPUT);
   pinMode(motorPWMPin, OUTPUT);
   pinMode(motorDirPin, OUTPUT);
-  pinMode(13, OUTPUT);  //we'll use the debug LED to output a heartbeat
+  pinMode(13, OUTPUT);  
   Serial.begin(9600);
-  //while (!Serial);    // Pause until serial link is established. 
+  while (!Serial);    // Wait until serial link is established 
                       // Comment out if not using USB connection
   // Set PWM Frequency
   setPwmFrequency(motorPWMPin,1);
@@ -61,12 +92,14 @@ void setup() {
   prevTime = millis();
   
   // Print instructions one time
+  Serial.println("Exaggerated Vibration and Recoil from Impact");
+  Serial.println("From Gleeson and Johnson's 2010 paper on cartoon haptics");
   Serial.println();
-  Serial.println("Press S1 = proportional magnitudes");
-  Serial.println("Press S2 = inverse magnitudes");
-  Serial.println("Press S3 = virtual wall");
+  Serial.println("Press S1 for proportional magnitudes");
+  Serial.println("Press S2 for inverse magnitudes");
+  Serial.println("Press S3 for virtual wall");
   Serial.println();
-  Serial.println("Press and hold buttons to switch between modes");
+  Serial.println("Press buttons to switch between modes");
  
 }
 
@@ -81,7 +114,7 @@ void loop()
         analogWrite(motorPWMPin,0);
         counts = 1;
         Serial.println("proportional magnitudes"); // Print the key that was pressed
-        delay(7000);                               // Delay for switch debounce
+        delay(8000);                               // Delay for switch debounce
         break;
       }
     case inv:
@@ -97,21 +130,21 @@ void loop()
         analogWrite(motorPWMPin,0);
         counts = 3;
         Serial.println("virtual wall");
-        delay(7000);                                // Delay for switch debounce
+        delay(8000);                                // Delay for switch debounce
         break;
       }
     case er1:
       {
         analogWrite(motorPWMPin,0);
         Serial.println("press a different button");
-        delay(7000);                                // Delay for switch debounce
+        delay(8000);                                // Delay for switch debounce
         break;
       }
     case er2:
       {
         analogWrite(motorPWMPin,0);
         Serial.println("press a different button");
-        delay(7000);                                // Delay for switch debounce
+        delay(8000);                                // Delay for switch debounce
       }
     case er0:
       {
@@ -160,12 +193,12 @@ void loop()
                 
         // execute ringing
         while((currentTime - (initTime + (d/adjust))) < 0){
-          //Serial.print("it ");
-          //Serial.println(t);
-          //Serial.print("d ");
-          //Serial.println(d);
-          //Serial.println(abs(currentTime-(initTime + (d*1))));
+          // Record incoming velocity
+          incv = velocity;
 
+          // Record angle
+          angleVal = (512.0 - analogRead(sensorInput))/ticksPerDeg;
+          
           // Determine current time in milliseconds
           currentTime = millis()/adjust; 
 
@@ -177,14 +210,14 @@ void loop()
           //Serial.println(t);
           
           // Define recoil force
-          Fr = abs(velocity*velocity*velocity*kr*((d/(adjust*10))-t));
+          Fr = abs(incv*incv*kr*((d/(adjust*10))-(t)));
 
           // Define oscillation force
-          Fosc = velocity*velocity*kosc*((d/(adjust*1))-t)*sin(omega*(t/adjust));
+          Fosc = abs(incv*incv*incv)*kosc*((d/(adjust*1))-t)*sin(omega*(t/adjust))/2;
 
           // Sum forces
           Ftot = Fosc + Fr;
-          //Serial.println(Fosc);
+          //Serial.println(incv);
           //Serial.println(t);
           
           // Compute the duty cycle required to generate torque at the motor
@@ -204,9 +237,15 @@ void loop()
            duty = 0;
           } 
        
+          if(angleVal < 7){
           motorCommand = (int)(duty*255);   // convert duty cycle to output signal
           analogWrite(motorPWMPin,motorCommand);  // output the signal
-         
+          }
+          else{
+            analogWrite(motorPWMPin,0);
+            delay(50); // Just in case there is some noise
+          }
+          
           // Update values with the current state
           prevAngleVal = angleVal;
           prevTime = currentTime;
@@ -231,15 +270,101 @@ void loop()
   else if(counts == 2){
        // Read the current state of sensors
        angleVal = (512.0 - analogRead(sensorInput))/ticksPerDeg;
+       
+       // If the paddle is in the wall, execute the ringing:       
+       if(angleVal < -15) {
 
-       // If the paddle is in the wall, execute the ringing
-       if(angleVal < 0) {
-        // execute the ringing
+        // Record the current time in milliseconds
+        currentTime = millis()/adjust; 
+        //Serial.println(currentTime);
+        
+        samplingTime = (currentTime - prevTime)/(adjust*1000.0); // In seconds
+
+        // Filtering //////
+    
+        // Filter position and reassign
+        angleVal = (angleVal + (tau/samplingTime)*prevAngleVal)/((tau/samplingTime)+1);
+     
+        // Compute unfiltered angular velocity
+        velocity = (angleVal - prevAngleVal)/samplingTime;
+       
+        // Filter velocity and reassign
+        velocity = (velocity + (tau/samplingTime)*oldVelocity)/((tau/samplingTime)+1);
+
+        ////////////////////
+        
+        // Determine time that the ringing starts
+        initTime = currentTime; 
+                
+        // execute ringing
+        while((currentTime - (initTime + (d/adjust))) < 0){
+          // Record incoming velocity
+          incv = 1/velocity;
+
+          // Record angle
+          angleVal = (512.0 - analogRead(sensorInput))/ticksPerDeg;
+          
+          // Determine current time in milliseconds
+          currentTime = millis()/adjust; 
+
+          // Calculate sampling time
+          samplingTime = (currentTime - prevTime)/(adjust*1000.0); // In seconds
+
+          // Calculate time elapsed since ringing started
+          t = currentTime - initTime;
+          //Serial.println(t);
+          
+          // Define recoil force
+          Fr = abs(incv*kr*((d/(adjust*10))-t))*10;
+
+          // Define oscillation force
+          Fosc = incv*incv*incv*kosc*((d/(adjust*1))-t)*sin(omega*(t/adjust))*10;
+
+          // Sum forces
+          Ftot = Fosc + Fr;
+          //Serial.println(Ftot);
+          //Serial.println(t);
+          
+          // Compute the duty cycle required to generate torque at the motor
+          duty = sqrt(abs(Ftot)/0.03);
+
+          // Determine correct direction for motor torque
+          if(Ftot > 0.0) { 
+            digitalWrite(motorDirPin, HIGH);
+          } else {
+            digitalWrite(motorDirPin, LOW);
+          }
+          
+         // Make sure the duty cycle is between 0 and 100%
+          if (duty > 1) {            
+              duty = 1;
+          } else if (duty < 0) { 
+           duty = 0;
+          } 
+       
+          if(angleVal < 7){
+          motorCommand = (int)(duty*255);   // convert duty cycle to output signal
+          analogWrite(motorPWMPin,motorCommand);  // output the signal
+          }
+          else{
+            analogWrite(motorPWMPin,0);
+            delay(50); // Just in case there is some noise
+          }
+          // Update values with the current state
+          prevAngleVal = angleVal;
+          prevTime = currentTime;
+
+        }
+       
        }
        
        else{
         analogWrite(motorPWMPin,0);
        }
+       
+       // Update values with the current state
+       prevAngleVal = angleVal;
+       prevTime = currentTime;
   }
   
   //-----------------------------------------------------------------------------
@@ -324,7 +449,7 @@ int Read_Buttons()
   if (adc_key_in < 700)  return er1;
   if (adc_key_in < 990)  return er2;
 
-  return er0;  // when all others fail, return this...
+  return er0;  // 
 }
 
 // --------------------------------------------------------------
