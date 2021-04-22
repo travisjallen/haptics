@@ -10,6 +10,8 @@
  *  
  *  From Gleeson and Johnson's 2010 paper on cartoon haptics
  *  
+ *  PLEASE OPEN THE SERIAL MONITOR
+ *  
  *  Press S1 for a vibration and recoil force amplitude that
  *  is proportional to the incoming velocity. This means
  *  a fast incoming velocity will give a large force amplitude
