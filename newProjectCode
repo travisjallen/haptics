@@ -37,67 +37,61 @@
 
 
 // Button Variables -------------------------------
-const int er0 = 0;
-const int prop = 1;
-const int inv = 2;
-const int vw = 3;
-const int er1 = 4;
-const int er2 = 5;
-int counts = 0;
-int key_Pressed = er0;
+const int er0 = 0;                // value assigned to no button being pressed
+const int inv = 2;                // value assigned to S1 button being pressed
+const int prop = 1;               // value assigned to S2 button being pressed
+const int vw = 3;                 // value assigned to S3 button being pressed
+const int er1 = 4;                // value assigned to S4 button being pressed
+const int er2 = 5;                // value assigned to S5 button being pressed
+int counts = 0;                   // variable used to determine which regime to enter
+int key_Pressed = er0;            // variable used to determine which key was pressed
 
 // Virtual Wall Variables -------------------------------
-float angleVal = 0.0;
-float prevAngleVal = 0.0;
-float velocity = 0.0;
+float angleVal = 0.0;             // position of haptic paddle at this iteration
+float prevAngleVal = 0.0;         // position of haptic paddle at previous iteration
+float velocity = 0.0;             // velocity of haptic paddle at this iteration
+float prevVelocity = 0.0;         // velocity at previous iteration
 double duty = 0;                  // duty cycle (between 0 and 255)
-unsigned int motorCommand = 0;
-float pGain = .1;
-float totalTorque = 0.0;
-float posError = 0;
-double samplingTime = 0.0;
-unsigned long prevTime =  0;
-unsigned long currentTime =  0;
-float prevVelocity = 0.0;
-float tau = .0005;
+unsigned int motorCommand = 0;    // motor power 
+float kWall = .5;                 // spring constant for simple virtual wall
+float totalTorque = 0.0;          // combined torque to be administered by the motor
+float posError = 0;               // distance between wall and current location of paddle
+float samplingTime = 0.0;         // exactly what it says
+unsigned long currentTime =  0;   // time at current iteration
+unsigned long prevTime =  0;      // time at previous iteration
+float tau = .0005;                // constant for first order low pass filter
+float timeAdjust = 64.0;          // divide by this to get milliseconds after PWM change
 
-// Ringing Variables -------------------------------------
+// Oscillation and Recoil Variables -------------------------------------
 // variables
-float impactVel = 0.0;
-
-float sensorReading = 0.0;
-float dxdt = 0.0;             // change of rate of position
-float alpha = 0.2;            // low-pass filter constant
-
-float targetPos = -20.0;      // degrees, target position of event-based wall
-float targetPos2 = 20.0;      // degrees, target position of regular wall
-float targetVel = 0.0;
-float reactionForce = 0.0;
-
-float wallEffort = 0.0;       // output value of PD controller from either event-based or regular wall
-
-boolean event = 0;            // flag to signal if the event has occured
-float eventSignal = 0.0;      // output value of decaying sinusoid
-float lambda = 0.0;           // Decay constant. Higher number means faster decay rate
-float freq = 5;             // Hz, frequency of oscillations
-float A = 0.0;                // Initial magnitude of decaying sinusoid
-float eventResetPos = -20;  // When you move away from the target position by this much, it will reset the trigger for the event
-
-float velError = 0.0;
-
-unsigned long startTime = 0.0;// global start time of event
-double t = 0.0;               // new local time reference used for the event
-float cutoff = 0.0;
+float incv = 0.0;                 // incoming velocity when an event occurs
+float fc = 0.78;                  // FIR filter constant
+float wallLoc = -15.0;            // position of wall in deg
+float wallResponse = 0.0;         // force commanded by interaction with wall
+bool event = 0;                   // flag to signal if the event has occured
+float oscillation = 0.0;          // force commanded by exaggerated oscillation
+float recoil = 0.0;               // force commanded by exaggerated recoil
+float frequency = 4.0;            // frequency of exaggerated oscillation in hz
+float omega = 0.0;                // frequency of exaggerated oscillation in rad/s, to be converted
+float erd = -15;                  // event reset distance, when you move away by this much the event is cancelled
+unsigned long startTime = 0.0;    // time that event begins, used for calculation of time t
+float t = 0.0;                    // time t since event began, in seconds
+float cutoff = 0.0;               // time cutoff for event to end
 
 
 void setup() {
+  // initialize pins
   pinMode(sensorInput, INPUT);
   pinMode(motorPWMPin, OUTPUT);
   pinMode(motorDirPin, OUTPUT);
   pinMode(13, OUTPUT);  
+
+  // begin serial communication
   Serial.begin(9600);
-  while (!Serial);    // Wait until serial link is established 
-                      // Comment out if not using USB connection
+
+  // wait until serial connection is established, comment out if not using USB connection
+  while (!Serial);    
+                      
   // Set PWM Frequency
   setPwmFrequency(motorPWMPin,1);
 
@@ -114,14 +108,19 @@ void setup() {
   Serial.println("Press S3 for virtual wall");
   Serial.println();
   Serial.println("Press buttons to switch between modes");
+
+  // convert oscillation frequency from hz to rad/s
+  omega = 2*PI*frequency;
  
 }
 
 void loop()
 {
-  key_Pressed = Read_Buttons();  // read the buttons
+  // read the buttons
+  key_Pressed = Read_Buttons();  
 
-  switch (key_Pressed)           // Do something based on the button pressed
+  // Do something based on the button pressed
+  switch (key_Pressed)           
   { 
     case prop:
       {
@@ -168,59 +167,87 @@ void loop()
   if(key_Pressed != er0)   // Blink LED and debounce switch
   {
   digitalWrite(13, HIGH);  // Turn LED on
-  delay(500);              // Delay for switch debounce & LED blink
+  delay(700);              // Delay for switch debounce & LED blink
   digitalWrite(13, LOW);   // Turn LED off
   }
 
   
-  //-----------------------------------------------------------------------------
+  //---------------------------------------------------------------------------------------------------------------------------------------------
   // Proportional rel'n between incoming velocity and ringing amplitude
-  //-----------------------------------------------------------------------------
+  //---------------------------------------------------------------------------------------------------------------------------------------------
   if(counts == 1){
 
-    // read the current position1
+    // read the current position
     angleVal = (512.0 - analogRead(sensorInput))/ticksPerDeg;
 
-    // Determine time that has passed since the last update
-    currentTime = millis() / 64.0 ;                             // In milliseconds. Dividing by 64 corrects for setting the PWM frequency to 62.5 kHz
-    samplingTime = currentTime - prevTime;                      // In milliseconds
+    // determine the current time and the time that has passed since the last update, in milliseconds
+    currentTime = millis()/timeAdjust;                             
+    samplingTime = currentTime - prevTime;                      
   
-    // Compute raw angular velocity
-    if (samplingTime != 0.0){                                   // only calculates derivative if samplingTime is non-zero, otherwise it will not update dxdt
-      dxdt = (angleVal - prevAngleVal) / samplingTime * 1000.0; // degrees per second
+    // compute raw angular velocity in deg/s if the sampling time is not zero. This solves a lot of problems. Thanks Andres!
+    if (samplingTime != 0.0){                                   
+      velocity = (angleVal - prevAngleVal)/samplingTime*1000.0; 
     }
-    velocity = alpha * dxdt + (1.0 - alpha) * prevVelocity;     // low-pass filter with variable filtering parameter alpha
-  
-    posError = targetPos - angleVal;                            // position error of event-based wall
-    
-  
-    
-    // Event-Based Code
-    if (posError > 0.0) {                           // If you're in the event wall
-      if (event == 0) {                             // and an event hasn't been triggered,
-        startTime = currentTime;                    // then keep track of the new reference time for the decaying sinusoid,
-        event = 1;                                  // trigger a new event,
-        impactVel = velocity;                       // and record the impact velocity.
-      }
-      wallEffort = posError * pGain;                // Calculate the effort produced solely by the event wall based on wall stiffness, pGain
-    } else {                                        // or else if you're not in either wall,
-      wallEffort = 0.0;                             // then set the wall effort to be zero.
-    }
-  
-    if(event == 1){
-      if(impactVel < -15){
-      t = (currentTime - startTime) / 1000.0;                                           // Use new time variable in units of seconds which the decaying sinusoid will reference
-      eventSignal = 0.03*abs(impactVel) * exp(-1 * t) * sin(6.283185 * freq * t);   // Formula for decaying sinusoid as a function of impact velocity. Note: 6.283185 = 2*PI
-      eventSignal = eventSignal + 4;
-      }
-    }
-    totalTorque = wallEffort + eventSignal ;     // Find total torque by superimposing decaying sinusoid on force produced solely by either wall
 
-    //cutoff = t + 3000;
-  
-    if ((posError < eventResetPos)) {                 //  || (currentTime > cutoff)
-      event = 0;                                    // then reset the trigger for the event.
-      eventSignal = 0;
+    // filter velocity with an FIR filter
+    velocity = fc*velocity+(1.0-fc)*prevVelocity;     
+
+    // determine how far we are from the wall
+    posError = wallLoc - angleVal;                            
+       
+    // check to see if we are in the wall and if we are not already in an event 
+    // If both of these are true, begin an "event" that will recoil and oscillate
+    if (posError > 0.0) {
+      if (event == 0) {
+        // record the time that the event was triggered. This will be t = 0
+        startTime = currentTime;
+        
+        // make note of the fact that an event has begun
+        event = 1;
+
+        // record the velocity that we entered the wall with so we can appropriately scale the response
+        incv = velocity;
+      } // if event == 0
+      
+      // we're still in the wall, but event may == 1, so calculate the response an ordinary virtual wall should produce
+      wallResponse = posError*kWall;
+      } // if posError > 0.0
+
+      // if we aren't in the wall, set the wall response to zero
+      else {                                        
+      wallResponse = 0.0;                             
+    }
+    
+    // If we are in an event, determine the recoil and oscillation forces to be displayed
+    if(event == 1){
+      // only display reaction for large enough initial velocities. This way we can still approach the wall slowly
+      if(incv < -15.0){
+        // record the time that has passed since the event began, with a new time variable that started at 0. units are seconds
+        t = (currentTime - startTime)/1000.0;
+
+        // calculate the force of the oscillation
+        oscillation = 0.08*abs(incv)*exp(-.5*t)*sin(omega*t);
+        
+        // calculate the force of the recoil
+        recoil = 10.0;
+      }
+    }
+
+    // combine the wall response with the oscillation and recoil
+    totalTorque = wallResponse + oscillation + recoil;
+
+    // calculate cutoff time
+    //cutoff = t + 10000;
+    //   || (currentTime > cutoff)
+
+    // check to see if we are still within the region where events are allowed, [-15,0]
+    if ((posError < erd)) {
+      // if we have left the region, end the event
+      event = 0; 
+
+      // since the event has ended, oscillation and recoil are zero
+      oscillation = 0;
+      recoil = 0;
     }
     
     // Compute the duty cycle required to generate torque at the motor
@@ -241,23 +268,11 @@ void loop()
       digitalWrite(motorDirPin, LOW);
       motorCommand = (int)(duty * 255);         // convert duty cycle to output signal
     }
-    
-    // Check to see if the velocity is infinity or not a number. This can happen when 
-    // samplingTime equals zero. Will blink on board LED and shut-off motors
-    if (velocity == INFINITY || velocity == NAN || isnan(velocity) || isinf(velocity)) {
-      for (int i = 0; i < 3; i++) {
-        digitalWrite(13, HIGH);
-        delay(10000000.0 / 512.0); 
-        digitalWrite(13, LOW);
-        delay(10000000.0 / 512.0);
-      }
-      delay(10000000.0 / 128.0); // delays about 1 second
-      motorCommand = 0;
-    }
+
+    // output the completed signal to the motor
+    analogWrite(motorPWMPin, motorCommand);
   
-    analogWrite(motorPWMPin, motorCommand);     // output the signal
-  
-    // Update values with the current state
+    // update old values with the current state for the next loop
     prevAngleVal = angleVal;
     prevVelocity = velocity;
     prevTime = currentTime;
@@ -265,26 +280,181 @@ void loop()
        
   } // if counts == 1
   
-  //-----------------------------------------------------------------------------
+  //---------------------------------------------------------------------------------------------------------------------------------------------
   // Inverse rel'n between incoming velocity and ringing amplitude
-  //-----------------------------------------------------------------------------
+  //---------------------------------------------------------------------------------------------------------------------------------------------
   else if(counts == 2){
-       analogWrite(motorPWMPin,0);
-  }
+    // read the current position
+    angleVal = (512.0 - analogRead(sensorInput))/ticksPerDeg;
+
+    // determine the current time and the time that has passed since the last update, in milliseconds
+    currentTime = millis()/timeAdjust;                             
+    samplingTime = currentTime - prevTime;                      
   
-  //-----------------------------------------------------------------------------
+    // compute raw angular velocity in deg/s if the sampling time is not zero. This solves a lot of problems. Thanks Andres!
+    if (samplingTime != 0.0){                                   
+      velocity = (angleVal - prevAngleVal)/samplingTime*1000.0; 
+    }
+
+    // filter velocity with an FIR filter
+    velocity = fc*velocity+(1.0-fc)*prevVelocity;
+    
+    // determine how far we are from the wall
+    posError = wallLoc - angleVal;                            
+       
+    // check to see if we are in the wall and if we are not already in an event 
+    // If both of these are true, begin an "event" that will recoil and oscillate
+    if (posError > 0.0) {
+      if (event == 0) {
+        // record the time that the event was triggered. This will be t = 0
+        startTime = currentTime;
+        
+        // make note of the fact that an event has begun
+        event = 1;
+
+        // record the velocity that we entered the wall with so we can appropriately scale the response
+        incv = velocity;
+      } // if event == 0
+      
+      // we're still in the wall, but event may == 1, so calculate the response an ordinary virtual wall should produce
+      wallResponse = posError*kWall;
+      } // if posError > 0.0
+
+      // if we aren't in the wall, set the wall response to zero
+      else {                                        
+      wallResponse = 0.0;                             
+    }
+    
+    // If we are in an event, determine the recoil and oscillation forces to be displayed
+    if(event == 1){
+      // only display reaction for small enough initial velocities. This way we can still approach the wall quickly
+      if(incv > -200.0){
+        // record the time that has passed since the event began, with a new time variable that started at 0. units are seconds
+        t = (currentTime - startTime)/1000.0;
+
+        // calculate the force of the oscillation
+        oscillation = 450*abs(1/(incv))*exp(-.5*t)*sin(omega*t);
+        
+        // calculate the force of the recoil
+        recoil = 6.0;
+      }
+    }
+
+    // combine the wall response with the oscillation and recoil
+    totalTorque = wallResponse + oscillation + recoil;
+
+    // calculate cutoff time
+    //cutoff = t + 10000;
+    //   || (currentTime > cutoff)
+
+    // check to see if we are still within the region where events are allowed, [-15,0]
+    if ((posError < erd)) {
+      // if we have left the region, end the event
+      event = 0; 
+
+      // since the event has ended, oscillation and recoil are zero
+      oscillation = 0;
+      recoil = 0;
+    }
+    
+    // Compute the duty cycle required to generate torque at the motor
+    duty = abs(totalTorque);
+  
+    // Make sure the duty cycle is between 0 and 100%
+    if (duty > 1) {
+      duty = 1;
+    } else if (duty < 0) {
+      duty = 0;
+    }
+  
+    // Determine correct direction for motor torque
+    if (totalTorque > 0.0) {
+      digitalWrite(motorDirPin, HIGH);
+      motorCommand = (int)(duty * 255);         // convert duty cycle to output signal
+    } else {
+      digitalWrite(motorDirPin, LOW);
+      motorCommand = (int)(duty * 255);         // convert duty cycle to output signal
+    }
+
+    // output the completed signal to the motor
+    analogWrite(motorPWMPin, motorCommand);
+  
+    // update old values with the current state for the next loop
+    prevAngleVal = angleVal;
+    prevVelocity = velocity;
+    prevTime = currentTime;
+  } // if counts == 2
+  
+  //---------------------------------------------------------------------------------------------------------------------------------------------
   // Virtual Wall
-  //-----------------------------------------------------------------------------
+  //---------------------------------------------------------------------------------------------------------------------------------------------
   else if(counts == 3){
-       analogWrite(motorPWMPin,0);
-  }
+    // read the sensor
+    angleVal = (512.0 - analogRead(sensorInput))/ticksPerDeg;
+    
+    // determine the current time and the time that has passed since the last update, in milliseconds
+    currentTime = millis()/timeAdjust;                             
+    samplingTime = currentTime - prevTime;                      
+  
+    // compute raw angular velocity in deg/s if the sampling time is not zero. This solves a lot of problems. Thanks Andres!
+    if (samplingTime != 0.0){                                   
+      velocity = (angleVal - prevAngleVal)/samplingTime*1000.0; 
+    }
+
+    // filter velocity with an FIR filter
+    velocity = fc*velocity+(1.0-fc)*prevVelocity;
+    
+    // determine how far we are from the wall
+    posError = wallLoc - angleVal;                            
+
+    // If we are in the wall, administer a response
+    if (posError > 0.0){
+      // determine the response
+      wallResponse = posError*kWall;
+    }
+    // if we are not, write zero power to motor
+    else{
+      wallResponse = 0.0;
+    }
+    
+    // Compute the duty cycle required to generate torque at the motor
+    duty = abs(wallResponse);
+  
+    // Make sure the duty cycle is between 0 and 100%
+    if (duty > 1) {
+      duty = 1;
+    } else if (duty < 0) {
+      duty = 0;
+    }
+  
+    // Determine correct direction for motor torque
+    if (totalTorque > 0.0) {
+      digitalWrite(motorDirPin, LOW);
+      motorCommand = (int)(duty * 255);         // convert duty cycle to output signal
+    } else {
+      digitalWrite(motorDirPin, HIGH);
+      motorCommand = (int)(duty * 255);         // convert duty cycle to output signal
+    }
+
+    // output the completed signal to the motor
+    analogWrite(motorPWMPin, motorCommand);
+
+    // update old values with the current state for the next loop
+    prevAngleVal = angleVal;
+    prevVelocity = velocity;
+    prevTime = currentTime;
+
+    
+  } // if counts == 3
 }
-//-------------------------------------------------------------------------------
+
+//-----------------------------------------------------------------------------------------------------------------------------------------------
 //  Function to read onboard buttons
-//-------------------------------------------------------------------------------
+//-----------------------------------------------------------------------------------------------------------------------------------------------
 int Read_Buttons()
 {
-  int adc_key_in = analogRead(A7);      // read the value of the key resistor divider
+  // read the value of the key resistor divider
+  int adc_key_in = analogRead(A7);      
     if (adc_key_in >= 1000) return er0; 
   if (adc_key_in < 30)   return prop; 
   if (adc_key_in < 200)  return inv;
@@ -292,12 +462,12 @@ int Read_Buttons()
   if (adc_key_in < 700)  return er1;
   if (adc_key_in < 990)  return er2;
 
-  return er0;  // 
+  return er0;  
 }
 
-// --------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------
 // Function to set PWM Freq -- DO NOT EDIT
-// --------------------------------------------------------------
+// ------------------------------------------------------------------------------------------------------------------------------
 void setPwmFrequency(int pin, int divisor) {
   byte mode;
   if(pin == 5 || pin == 6 || pin == 9 || pin == 10) {
